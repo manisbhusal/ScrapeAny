@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ScrapeAny</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-primary: #131314;
+        --bg-surface: #1e1f20;
+        --bg-surface-hover: #28292a;
+        --bg-input: #131314;
+        --border-color: #333537;
+        --text-main: #e3e3e3;
+        --text-muted: #c4c7c5;
+        --text-dim: #8e918f;
+        --accent-blue: #a8c7fa;
+        --accent-gradient: linear-gradient(
+          135deg,
+          #a8c7fa 0%,
+          #c3b4fe 50%,
+          #f7a8b8 100%
+        );
+        --code-bg: #0e0e0e;
+        --status-success: #6dd58c;
+        --status-error: #f2b8b5;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background-color: var(--bg-primary);
+        color: var(--text-main);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 40px 20px;
+      }
+
+      .container {
+        width: 100%;
+        max-width: 900px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 8px;
+      }
+
+      .header-title {
+        font-size: 2.2rem;
+        font-weight: 600;
+        background: var(--accent-gradient);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        letter-spacing: -0.5px;
+        margin-bottom: 8px;
+      }
+
+      .header-sub {
+        color: var(--text-muted);
+        font-size: 0.95rem;
+      }
+
+      .panel {
+        background: var(--bg-surface);
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 24px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+      }
+
+      .panel-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        color: var(--text-dim);
+        margin-bottom: 16px;
+      }
+
+      .input-wrapper {
+        display: flex;
+        gap: 12px;
+        background: var(--bg-input);
+        border: 1px solid var(--border-color);
+        border-radius: 28px;
+        padding: 6px 6px 6px 18px;
+        transition:
+          border-color 0.2s ease,
+          box-shadow 0.2s ease;
+      }
+
+      .input-wrapper:focus-within {
+        border-color: var(--accent-blue);
+        box-shadow: 0 0 0 2px rgba(168, 199, 250, 0.15);
+      }
+
+      input[type="text"] {
+        flex: 1;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--text-main);
+        font-size: 0.95rem;
+        font-family: inherit;
+      }
+
+      input[type="text"]::placeholder {
+        color: var(--text-dim);
+      }
+
+      button {
+        background: var(--accent-gradient);
+        border: none;
+        outline: none;
+        color: #040404;
+        font-weight: 600;
+        font-size: 0.9rem;
+        padding: 12px 24px;
+        border-radius: 20px;
+        cursor: pointer;
+        transition:
+          opacity 0.2s ease,
+          transform 0.1s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      button:hover {
+        opacity: 0.9;
+      }
+      button:active {
+        transform: scale(0.98);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .status-container {
+        margin-top: 14px;
+        font-size: 0.88rem;
+        min-height: 20px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-muted);
+      }
+
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border-color);
+        border-top-color: var(--accent-blue);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        display: none;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .code-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .copy-btn {
+        background: transparent;
+        border: 1px solid var(--border-color);
+        color: var(--text-muted);
+        padding: 6px 12px;
+        border-radius: 8px;
+        font-size: 0.8rem;
+      }
+
+      .copy-btn:hover {
+        background: var(--bg-surface-hover);
+        color: var(--text-main);
+      }
+
+      pre {
+        background-color: var(--code-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 18px;
+        overflow-x: auto;
+        max-height: 520px;
+        color: #d7ba7d;
+        font-family: "Fira Code", monospace;
+        font-size: 0.85rem;
+        line-height: 1.5;
+      }
+
+      pre::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      pre::-webkit-scrollbar-track {
+        background: var(--code-bg);
+      }
+      pre::-webkit-scrollbar-thumb {
+        background: var(--border-color);
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="header-title">ScrapeAny</div>
+        <div class="header-sub">
+          Convert web content, media streams, and single pages into clean API
+          responses
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Target Location</div>
+        <div class="input-wrapper">
+          <input
+            type="text"
+            id="targetUrl"
+            placeholder="Enter target URL (e.g. https://www.example.com/...)"
+            autocomplete="off"
+          />
+          <button id="scrapeBtn" onclick="scrapeSite()">
+            <span>Extract Data</span>
+          </button>
+        </div>
+        <div class="status-container">
+          <div id="spinner" class="spinner"></div>
+          <span id="statusText">Ready</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="code-header">
+          <div class="panel-title" style="margin-bottom: 0">
+            Generated API Payload
+          </div>
+          <button class="copy-btn" onclick="copyJson()">Copy JSON</button>
+        </div>
+        <pre
+          id="jsonOutput"
+        ><code>// API payload response will render here...</code></pre>
+      </div>
+    </div>
+
+    <script>
+      async function scrapeSite() {
+        const urlInput = document.getElementById("targetUrl");
+        const url = urlInput.value.trim();
+        const statusText = document.getElementById("statusText");
+        const spinner = document.getElementById("spinner");
+        const output = document.getElementById("jsonOutput");
+        const scrapeBtn = document.getElementById("scrapeBtn");
+
+        if (!url) {
+          statusText.style.color = "var(--status-error)";
+          statusText.textContent = "Please enter a valid web URL first.";
+          return;
+        }
+
+        scrapeBtn.disabled = true;
+        spinner.style.display = "block";
+        statusText.style.color = "var(--text-muted)";
+        statusText.textContent =
+          "Bypassing verification & parsing site parameters...";
+        output.textContent = "// Fetching data from headless engine...";
+
+        try {
+          const res = await fetch(`${window.location.origin}/api/scrape`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({ url }),
+          });
+          const json = await res.json();
+
+          if (json.success) {
+            statusText.style.color = "var(--status-success)";
+            statusText.textContent = `Completed — Type: ${json.pageType || "Target Content"}`;
+          } else {
+            statusText.style.color = "var(--status-error)";
+            statusText.textContent = "Extraction Failed: " + json.error;
+          }
+
+          output.textContent = JSON.stringify(json, null, 2);
+        } catch (err) {
+          statusText.style.color = "var(--status-error)";
+          statusText.textContent = "Connection error with scraper process.";
+          output.textContent = `// Error: ${err.message}`;
+        } finally {
+          scrapeBtn.disabled = false;
+          spinner.style.display = "none";
+        }
+      }
+
+      function copyJson() {
+        const content = document.getElementById("jsonOutput").textContent;
+        navigator.clipboard.writeText(content);
+        const copyBtn = document.querySelector(".copy-btn");
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => (copyBtn.textContent = "Copy JSON"), 2000);
+      }
+    </script>
+  </body>
+</html>
