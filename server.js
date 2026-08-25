@@ -21,7 +21,9 @@ app.use(express.static(__dirname));
 // Dynamic browser loader for Vercel / Local environments
 async function launchBrowser() {
     if (process.env.VERCEL) {
-        const chromium = require('@sparticuz/chromium');
+        // Use dynamic import() to load ESM @sparticuz/chromium in CommonJS
+        const chromiumModule = await import('@sparticuz/chromium');
+        const chromium = chromiumModule.default || chromiumModule;
         const puppeteerCore = require('puppeteer-core');
 
         return await puppeteerExtra.launch({
