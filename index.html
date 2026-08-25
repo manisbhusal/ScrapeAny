@@ -129,6 +129,11 @@
         color: var(--text-dim);
       }
 
+      .button-group {
+        display: flex;
+        gap: 8px;
+      }
+
       button {
         background: var(--accent-gradient);
         border: none;
@@ -136,7 +141,7 @@
         color: #040404;
         font-weight: 600;
         font-size: 0.9rem;
-        padding: 12px 24px;
+        padding: 12px 20px;
         border-radius: 20px;
         cursor: pointer;
         transition:
@@ -145,6 +150,16 @@
         display: flex;
         align-items: center;
         gap: 8px;
+      }
+
+      button.secondary-btn {
+        background: transparent;
+        border: 1px solid var(--border-color);
+        color: var(--text-main);
+      }
+
+      button.secondary-btn:hover {
+        background: var(--bg-surface-hover);
       }
 
       button:hover {
@@ -205,6 +220,27 @@
         color: var(--text-main);
       }
 
+      .view-tabs {
+        display: flex;
+        gap: 8px;
+      }
+
+      .tab-btn {
+        background: transparent;
+        border: 1px solid var(--border-color);
+        color: var(--text-muted);
+        padding: 6px 12px;
+        border-radius: 8px;
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
+
+      .tab-btn.active {
+        background: var(--bg-surface-hover);
+        color: var(--accent-blue);
+        border-color: var(--accent-blue);
+      }
+
       pre {
         background-color: var(--code-bg);
         border: 1px solid var(--border-color);
@@ -216,6 +252,17 @@
         font-family: "Fira Code", monospace;
         font-size: 0.85rem;
         line-height: 1.5;
+      }
+
+      iframe#uiPreview {
+        width: 100%;
+        height: 520px;
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        background: #ffffff;
+        display: none;
+        /* Prevent links and buttons from opening external sites */
+        pointer-events: none;
       }
 
       pre::-webkit-scrollbar {
@@ -237,7 +284,7 @@
         <div class="header-title">ScrapeAny</div>
         <div class="header-sub">
           Convert web content, media streams, and single pages into clean API
-          responses
+          responses or full UI clones
         </div>
       </div>
 
@@ -250,9 +297,14 @@
             placeholder="Enter target URL (e.g. https://www.example.com/...)"
             autocomplete="off"
           />
-          <button id="scrapeBtn" onclick="scrapeSite()">
-            <span>Extract Data</span>
-          </button>
+          <div class="button-group">
+            <button id="scrapeBtn" onclick="scrapeSite()">
+              <span>Extract Data</span>
+            </button>
+            <button id="cloneBtn" class="secondary-btn" onclick="cloneUI()">
+              <span>Clone UI</span>
+            </button>
+          </div>
         </div>
         <div class="status-container">
           <div id="spinner" class="spinner"></div>
@@ -262,25 +314,80 @@
 
       <div class="panel">
         <div class="code-header">
-          <div class="panel-title" style="margin-bottom: 0">
-            Generated API Payload
+          <div class="view-tabs">
+            <button
+              id="jsonTabBtn"
+              class="tab-btn active"
+              onclick="switchView('json')"
+            >
+              API Output
+            </button>
+            <button
+              id="uiTabBtn"
+              class="tab-btn"
+              onclick="switchView('preview')"
+            >
+              Live UI Preview
+            </button>
           </div>
-          <button class="copy-btn" onclick="copyJson()">Copy JSON</button>
+          <div class="button-group">
+            <button
+              class="copy-btn"
+              id="downloadBtn"
+              style="display: none"
+              onclick="downloadHtml()"
+            >
+              Download HTML
+            </button>
+            <button class="copy-btn" onclick="copyContent()">
+              Copy Output
+            </button>
+          </div>
         </div>
         <pre
           id="jsonOutput"
-        ><code>// API payload response will render here...</code></pre>
+        ><code>// Output response will render here...</code></pre>
+        <iframe id="uiPreview" sandbox="allow-same-origin allow-forms"></iframe>
       </div>
     </div>
 
     <script>
+      let currentMode = "json"; // 'json' or 'html'
+      let clonedHtmlData = "";
+
+      function setControlsState(disabled) {
+        document.getElementById("scrapeBtn").disabled = disabled;
+        document.getElementById("cloneBtn").disabled = disabled;
+        document.getElementById("spinner").style.display = disabled
+          ? "block"
+          : "none";
+      }
+
+      function switchView(view) {
+        const output = document.getElementById("jsonOutput");
+        const iframe = document.getElementById("uiPreview");
+        const jsonBtn = document.getElementById("jsonTabBtn");
+        const uiBtn = document.getElementById("uiTabBtn");
+
+        if (view === "preview") {
+          output.style.display = "none";
+          iframe.style.display = "block";
+          jsonBtn.classList.remove("active");
+          uiBtn.classList.add("active");
+        } else {
+          output.style.display = "block";
+          iframe.style.display = "none";
+          jsonBtn.classList.add("active");
+          uiBtn.classList.remove("active");
+        }
+      }
+
       async function scrapeSite() {
         const urlInput = document.getElementById("targetUrl");
         const url = urlInput.value.trim();
         const statusText = document.getElementById("statusText");
-        const spinner = document.getElementById("spinner");
         const output = document.getElementById("jsonOutput");
-        const scrapeBtn = document.getElementById("scrapeBtn");
+        const downloadBtn = document.getElementById("downloadBtn");
 
         if (!url) {
           statusText.style.color = "var(--status-error)";
@@ -288,8 +395,11 @@
           return;
         }
 
-        scrapeBtn.disabled = true;
-        spinner.style.display = "block";
+        currentMode = "json";
+        downloadBtn.style.display = "none";
+        switchView("json");
+        setControlsState(true);
+
         statusText.style.color = "var(--text-muted)";
         statusText.textContent =
           "Bypassing verification & parsing site parameters...";
@@ -320,17 +430,89 @@
           statusText.textContent = "Connection error with scraper process.";
           output.textContent = `// Error: ${err.message}`;
         } finally {
-          scrapeBtn.disabled = false;
-          spinner.style.display = "none";
+          setControlsState(false);
         }
       }
 
-      function copyJson() {
-        const content = document.getElementById("jsonOutput").textContent;
+      async function cloneUI() {
+        const urlInput = document.getElementById("targetUrl");
+        const url = urlInput.value.trim();
+        const statusText = document.getElementById("statusText");
+        const output = document.getElementById("jsonOutput");
+        const iframe = document.getElementById("uiPreview");
+        const downloadBtn = document.getElementById("downloadBtn");
+
+        if (!url) {
+          statusText.style.color = "var(--status-error)";
+          statusText.textContent = "Please enter a valid web URL first.";
+          return;
+        }
+
+        currentMode = "html";
+        setControlsState(true);
+
+        statusText.style.color = "var(--text-muted)";
+        statusText.textContent =
+          "Capturing DOM structure and UI stylesheets...";
+        output.textContent = "// Cloning UI markup...";
+
+        try {
+          const res = await fetch(`${window.location.origin}/api/clone-ui`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({ url }),
+          });
+          const json = await res.json();
+
+          if (json.success) {
+            clonedHtmlData = json.html;
+            statusText.style.color = "var(--status-success)";
+            statusText.textContent = "UI cloned successfully!";
+
+            output.textContent = clonedHtmlData;
+            iframe.srcdoc = clonedHtmlData;
+            downloadBtn.style.display = "inline-block";
+
+            switchView("preview");
+          } else {
+            statusText.style.color = "var(--status-error)";
+            statusText.textContent = "UI Clone Failed: " + json.error;
+            output.textContent = `// Error: ${json.error}`;
+            switchView("json");
+          }
+        } catch (err) {
+          statusText.style.color = "var(--status-error)";
+          statusText.textContent = "Connection error with scraper process.";
+          output.textContent = `// Error: ${err.message}`;
+          switchView("json");
+        } finally {
+          setControlsState(false);
+        }
+      }
+
+      function copyContent() {
+        const content =
+          currentMode === "html" && clonedHtmlData
+            ? clonedHtmlData
+            : document.getElementById("jsonOutput").textContent;
+
         navigator.clipboard.writeText(content);
-        const copyBtn = document.querySelector(".copy-btn");
+        const copyBtn = event.target;
+        const originalText = copyBtn.textContent;
         copyBtn.textContent = "Copied!";
-        setTimeout(() => (copyBtn.textContent = "Copy JSON"), 2000);
+        setTimeout(() => (copyBtn.textContent = originalText), 2000);
+      }
+
+      function downloadHtml() {
+        if (!clonedHtmlData) return;
+        const blob = new Blob([clonedHtmlData], { type: "text/html" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "cloned_page.html";
+        a.click();
       }
     </script>
   </body>
