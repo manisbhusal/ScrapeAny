@@ -11,13 +11,16 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "axios": "^1.19.0",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "puppeteer": "^25.9.0",
+    "puppeteer-core": "^25.9.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "vercel": "^59.5.0"
   },
   "description": ""
 }

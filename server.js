@@ -1,14 +1,14 @@
 const express = require('express');
-const puppeteer = require('puppeteer-extra');
+const puppeteerExtra = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 
 // Activate stealth plugin to pass Cloudflare and anti-bot checks
-puppeteer.use(StealthPlugin());
+puppeteerExtra.use(StealthPlugin());
 
 const app = express();
 
-// Permissive CORS configuration to prevent Brave Browser request blocking
+// Permissive CORS configuration
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'OPTIONS'],
@@ -18,7 +18,39 @@ app.use(cors({
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// --- EXISTING FEATURE: API DATA EXTRACTION ---
+// Dynamic browser loader for Vercel / Local environments
+async function launchBrowser() {
+    if (process.env.VERCEL) {
+        const chromium = require('@sparticuz/chromium');
+        const puppeteerCore = require('puppeteer-core');
+
+        return await puppeteerExtra.launch({
+            puppeteer: puppeteerCore,
+            args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
+            defaultViewport: chromium.defaultViewport,
+            executablePath: await chromium.executablePath(),
+            headless: chromium.headless,
+        });
+    } else {
+        const puppeteer = require('puppeteer');
+        return await puppeteerExtra.launch({
+            puppeteer,
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process'
+            ]
+        });
+    }
+}
+
+// --- FEATURE 1: API DATA EXTRACTION ---
 app.post('/api/scrape', async (req, res) => {
     let { url } = req.body;
 
@@ -27,16 +59,7 @@ app.post('/api/scrape', async (req, res) => {
 
     let browser;
     try {
-        browser = await puppeteer.launch({
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--window-size=1920,1080'
-            ]
-        });
-
+        browser = await launchBrowser();
         const page = await browser.newPage();
         await page.setViewport({ width: 1920, height: 1080 });
 
@@ -59,7 +82,8 @@ app.post('/api/scrape', async (req, res) => {
             }
         });
 
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+        // Vercel serverless function timeout optimization (30s max for hobby)
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
         await page.evaluate(async () => {
             await new Promise((resolve) => {
@@ -76,7 +100,7 @@ app.post('/api/scrape', async (req, res) => {
             });
         });
 
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
         const pageData = await page.evaluate(() => {
             const metaTitle = document.title || '';
@@ -170,6 +194,7 @@ app.post('/api/scrape', async (req, res) => {
     }
 });
 
+// --- FEATURE 2: CLONE UI PREVIEW ---
 app.post('/api/clone-ui', async (req, res) => {
     let { url } = req.body;
 
@@ -178,26 +203,12 @@ app.post('/api/clone-ui', async (req, res) => {
 
     let browser;
     try {
-        browser = await puppeteer.launch({
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process' // Helps prevent memory crashes on Render's free tier
-            ]
-        });
-
+        browser = await launchBrowser();
         const page = await browser.newPage();
         await page.setViewport({ width: 1920, height: 1080 });
 
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
-        // Scroll down to force image lazy-loading and layout calculation
         await page.evaluate(async () => {
             await new Promise((resolve) => {
                 let totalHeight = 0;
@@ -213,13 +224,11 @@ app.post('/api/clone-ui', async (req, res) => {
             });
         });
 
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // Clean executable JS, resolve relative URLs, and neutralize links
         const cleanHtml = await page.evaluate(() => {
             const origin = window.location.origin;
 
-            // 1. Set base tag so relative CSS/Images load correctly
             let base = document.querySelector('base');
             if (!base) {
                 base = document.createElement('base');
@@ -227,10 +236,8 @@ app.post('/api/clone-ui', async (req, res) => {
             }
             base.href = origin + '/';
 
-            // 2. Remove all script tags
             document.querySelectorAll('script').forEach(s => s.remove());
 
-            // 3. Remove inline event listeners
             document.querySelectorAll('*').forEach(el => {
                 Array.from(el.attributes).forEach(attr => {
                     if (attr.name.startsWith('on')) {
@@ -239,7 +246,6 @@ app.post('/api/clone-ui', async (req, res) => {
                 });
             });
 
-            // 4. Neutralize all anchor links to prevent external redirection
             document.querySelectorAll('a').forEach(anchor => {
                 anchor.setAttribute('data-original-href', anchor.getAttribute('href') || '');
                 anchor.setAttribute('href', 'javascript:void(0);');
@@ -261,5 +267,12 @@ app.post('/api/clone-ui', async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 });
-const PORT = 3000;
-app.listen(PORT, () => console.log(`🚀 API Scraper running on http://localhost:${PORT}`));
+
+// Export Express app for Vercel
+module.exports = app;
+
+// Listen locally when not in production
+if (!process.env.VERCEL) {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => console.log(`🚀 API Scraper running on http://localhost:${PORT}`));
+}
