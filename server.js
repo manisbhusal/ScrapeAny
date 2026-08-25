@@ -1,11 +1,5 @@
 const express = require('express');
-const puppeteerExtra = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
-
-// Activate stealth plugin to pass Cloudflare and anti-bot checks
-puppeteerExtra.use(StealthPlugin());
-
 const app = express();
 
 // Permissive CORS configuration
@@ -20,23 +14,37 @@ app.use(express.static(__dirname));
 
 // Dynamic browser loader for Vercel / Local environments
 async function launchBrowser() {
+    const { addExtra } = require('puppeteer-extra');
+    const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
     if (process.env.VERCEL) {
-        // Use dynamic import() to load ESM @sparticuz/chromium in CommonJS
+        // Dynamically import ESM modules for Vercel
         const chromiumModule = await import('@sparticuz/chromium');
         const chromium = chromiumModule.default || chromiumModule;
-        const puppeteerCore = require('puppeteer-core');
 
-        return await puppeteerExtra.launch({
-            puppeteer: puppeteerCore,
+        const puppeteerCoreModule = await import('puppeteer-core');
+        const puppeteerCore = puppeteerCoreModule.default || puppeteerCoreModule;
+
+        // Wrap puppeteer-core with extra & stealth plugin
+        const puppeteer = addExtra(puppeteerCore);
+        puppeteer.use(StealthPlugin());
+
+        return await puppeteer.launch({
             args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
             defaultViewport: chromium.defaultViewport,
             executablePath: await chromium.executablePath(),
             headless: chromium.headless,
         });
     } else {
-        const puppeteer = require('puppeteer');
-        return await puppeteerExtra.launch({
-            puppeteer,
+        // Dynamically import standard puppeteer for local testing
+        const puppeteerBaseModule = await import('puppeteer');
+        const puppeteerBase = puppeteerBaseModule.default || puppeteerBaseModule;
+
+        // Wrap standard puppeteer with extra & stealth plugin
+        const puppeteer = addExtra(puppeteerBase);
+        puppeteer.use(StealthPlugin());
+
+        return await puppeteer.launch({
             headless: 'new',
             args: [
                 '--no-sandbox',
