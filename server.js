@@ -14,35 +14,26 @@ app.use(express.static(__dirname));
 
 // Dynamic browser loader for Vercel / Local environments
 async function launchBrowser() {
-    const { addExtra } = require('puppeteer-extra');
-    const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-
     if (process.env.VERCEL) {
-        // Dynamically import ESM modules for Vercel
         const chromiumModule = await import('@sparticuz/chromium');
         const chromium = chromiumModule.default || chromiumModule;
 
         const puppeteerCoreModule = await import('puppeteer-core');
-        const puppeteerCore = puppeteerCoreModule.default || puppeteerCoreModule;
-
-        // Wrap puppeteer-core with extra & stealth plugin
-        const puppeteer = addExtra(puppeteerCore);
-        puppeteer.use(StealthPlugin());
+        const puppeteer = puppeteerCoreModule.default || puppeteerCoreModule;
 
         return await puppeteer.launch({
-            args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
+            args: [
+                ...chromium.args,
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ],
             defaultViewport: chromium.defaultViewport,
             executablePath: await chromium.executablePath(),
-            headless: chromium.headless,
+            headless: chromium.headless
         });
     } else {
-        // Dynamically import standard puppeteer for local testing
-        const puppeteerBaseModule = await import('puppeteer');
-        const puppeteerBase = puppeteerBaseModule.default || puppeteerBaseModule;
-
-        // Wrap standard puppeteer with extra & stealth plugin
-        const puppeteer = addExtra(puppeteerBase);
-        puppeteer.use(StealthPlugin());
+        const puppeteerModule = await import('puppeteer');
+        const puppeteer = puppeteerModule.default || puppeteerModule;
 
         return await puppeteer.launch({
             headless: 'new',

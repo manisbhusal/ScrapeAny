@@ -18,8 +18,6 @@
     "express": "^5.2.1",
     "puppeteer": "^25.9.0",
     "puppeteer-core": "^25.9.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "vercel": "^59.5.0"
   },
   "description": ""
