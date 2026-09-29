@@ -1,16 +1,93 @@
 const express = require('express');
 const cors = require('cors');
+const net = require('net');
 const app = express();
 
-// Permissive CORS configuration
 app.use(cors({
-    origin: '*',
+    origin: process.env.ALLOWED_ORIGIN || true,
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '16kb' }));
 app.use(express.static(__dirname));
+
+const BLOCKED_HOSTNAMES = new Set([
+    'localhost',
+    'localhost.localdomain',
+    'metadata.google.internal',
+    'metadata.google.com'
+]);
+
+function isPrivateIp(hostname) {
+    const version = net.isIP(hostname);
+    if (version === 4) {
+        const octets = hostname.split('.').map(Number);
+        return octets[0] === 10 ||
+            (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+            (octets[0] === 192 && octets[1] === 168) ||
+            octets[0] === 127 ||
+            octets[0] === 0 ||
+            (octets[0] === 169 && octets[1] === 254);
+    }
+
+    if (version === 6) {
+        const normalized = hostname.toLowerCase();
+        return normalized === '::1' || normalized === '::' ||
+            normalized.startsWith('fc') || normalized.startsWith('fd') ||
+            normalized.startsWith('fe80:') || normalized.startsWith('::ffff:127.');
+    }
+
+    return false;
+}
+
+function normalizeTargetUrl(value) {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+        throw new Error('URL is required');
+    }
+
+    const trimmed = value.trim();
+    let target;
+    try {
+        target = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    } catch {
+        throw new Error('Invalid URL');
+    }
+    const hostname = target.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+
+    if (!['http:', 'https:'].includes(target.protocol) ||
+        BLOCKED_HOSTNAMES.has(hostname) || isPrivateIp(hostname)) {
+        throw new Error('Only public HTTP(S) URLs are allowed');
+    }
+
+    target.username = '';
+    target.password = '';
+    return target.toString();
+}
+
+function isBlockedRequestUrl(value) {
+    try {
+        const target = new URL(value);
+        const hostname = target.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+        return !['http:', 'https:'].includes(target.protocol) ||
+            BLOCKED_HOSTNAMES.has(hostname) || isPrivateIp(hostname);
+    } catch {
+        return true;
+    }
+}
+
+function configurePage(page) {
+    page.on('request', request => {
+        const action = isBlockedRequestUrl(request.url()) ? request.abort() : request.continue();
+        action.catch(() => { });
+    });
+}
+
+function sendError(res, error) {
+    const status = ['URL is required', 'Invalid URL', 'Only public HTTP(S) URLs are allowed']
+        .includes(error.message) ? 400 : 500;
+    res.status(status).json({ success: false, error: error.message });
+}
 
 // Dynamic browser loader for Vercel / Local environments
 async function launchBrowser() {
@@ -53,15 +130,12 @@ async function launchBrowser() {
 
 // --- FEATURE 1: API DATA EXTRACTION ---
 app.post('/api/scrape', async (req, res) => {
-    let { url } = req.body;
-
-    if (!url) return res.status(400).json({ error: 'URL is required' });
-    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-
     let browser;
     try {
+        const url = normalizeTargetUrl(req.body?.url);
         browser = await launchBrowser();
         const page = await browser.newPage();
+        configurePage(page);
         await page.setViewport({ width: 1920, height: 1080 });
 
         const videoStreams = [];
@@ -70,7 +144,7 @@ app.post('/api/scrape', async (req, res) => {
         page.on('response', async (response) => {
             const reqUrl = response.url();
 
-            if (reqUrl.includes('.m3u8') || reqUrl.includes('.mp4')) {
+            if (/\.(m3u8|mp4)(?:$|[?#])/i.test(reqUrl) && videoStreams.length < 100) {
                 videoStreams.push(reqUrl);
             }
 
@@ -78,7 +152,9 @@ app.post('/api/scrape', async (req, res) => {
             if (contentType.includes('application/json') && !reqUrl.includes('google') && !reqUrl.includes('analytics')) {
                 try {
                     const json = await response.json().catch(() => null);
-                    if (json) interceptedAPIs.push({ endpoint: reqUrl, data: json });
+                    if (json && interceptedAPIs.length < 20) {
+                        interceptedAPIs.push({ endpoint: reqUrl, data: json });
+                    }
                 } catch (e) { }
             }
         });
@@ -177,8 +253,6 @@ app.post('/api/scrape', async (req, res) => {
             };
         });
 
-        await browser.close();
-
         res.json({
             success: true,
             scrapedUrl: url,
@@ -190,22 +264,20 @@ app.post('/api/scrape', async (req, res) => {
         });
 
     } catch (error) {
-        if (browser) await browser.close();
-        res.status(500).json({ success: false, error: error.message });
+        sendError(res, error);
+    } finally {
+        if (browser) await browser.close().catch(() => { });
     }
 });
 
 // --- FEATURE 2: CLONE UI PREVIEW ---
 app.post('/api/clone-ui', async (req, res) => {
-    let { url } = req.body;
-
-    if (!url) return res.status(400).json({ error: 'URL is required' });
-    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-
     let browser;
     try {
+        const url = normalizeTargetUrl(req.body?.url);
         browser = await launchBrowser();
         const page = await browser.newPage();
+        configurePage(page);
         await page.setViewport({ width: 1920, height: 1080 });
 
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -256,16 +328,15 @@ app.post('/api/clone-ui', async (req, res) => {
             return document.documentElement.outerHTML;
         });
 
-        await browser.close();
-
         res.json({
             success: true,
             html: cleanHtml
         });
 
     } catch (error) {
-        if (browser) await browser.close();
-        res.status(500).json({ success: false, error: error.message });
+        sendError(res, error);
+    } finally {
+        if (browser) await browser.close().catch(() => { });
     }
 });
 

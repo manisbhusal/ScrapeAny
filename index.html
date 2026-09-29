@@ -339,7 +339,7 @@
             >
               Download HTML
             </button>
-            <button class="copy-btn" onclick="copyContent()">
+            <button class="copy-btn" onclick="copyContent(event)">
               Copy Output
             </button>
           </div>
@@ -493,13 +493,13 @@
         }
       }
 
-      function copyContent() {
+      async function copyContent(event) {
         const content =
           currentMode === "html" && clonedHtmlData
             ? clonedHtmlData
             : document.getElementById("jsonOutput").textContent;
 
-        navigator.clipboard.writeText(content);
+        await navigator.clipboard.writeText(content);
         const copyBtn = event.target;
         const originalText = copyBtn.textContent;
         copyBtn.textContent = "Copied!";
