@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const net = require('net');
+const dns = require('dns').promises;
+const fs = require('fs');
+const path = require('path');
 const app = express();
 
 app.use(cors({
@@ -18,6 +21,12 @@ const BLOCKED_HOSTNAMES = new Set([
     'metadata.google.internal',
     'metadata.google.com'
 ]);
+const MAX_BULK_URLS = 20;
+const MAX_ACTIONS = 10;
+const MAX_CONCURRENT_JOBS = 2;
+const activeJobs = new Set();
+const requestWindows = new Map();
+const historyFile = path.join('/tmp', 'scrapeany-history.json');
 
 function isPrivateIp(hostname) {
     const version = net.isIP(hostname);
@@ -41,7 +50,7 @@ function isPrivateIp(hostname) {
     return false;
 }
 
-function normalizeTargetUrl(value) {
+async function normalizeTargetUrl(value) {
     if (typeof value !== 'string' || value.trim().length === 0) {
         throw new Error('URL is required');
     }
@@ -62,6 +71,10 @@ function normalizeTargetUrl(value) {
 
     target.username = '';
     target.password = '';
+    const addresses = await dns.lookup(hostname, { all: true }).catch(() => []);
+    if (addresses.some(address => isPrivateIp(address.address))) {
+        throw new Error('Target resolves to a private network');
+    }
     return target.toString();
 }
 
@@ -84,9 +97,96 @@ function configurePage(page) {
 }
 
 function sendError(res, error) {
-    const status = ['URL is required', 'Invalid URL', 'Only public HTTP(S) URLs are allowed']
+    const status = ['URL is required', 'Invalid URL', 'Only public HTTP(S) URLs are allowed', 'Target resolves to a private network', 'Too many active jobs']
         .includes(error.message) ? 400 : 500;
     res.status(status).json({ success: false, error: error.message });
+}
+
+function rateLimit(req, res, next) {
+    const key = req.ip || 'unknown';
+    const now = Date.now();
+    const windowStart = now - 60_000;
+    const timestamps = (requestWindows.get(key) || []).filter(time => time > windowStart);
+    if (timestamps.length >= 10) return res.status(429).json({ success: false, error: 'Rate limit exceeded. Try again shortly.' });
+    timestamps.push(now);
+    requestWindows.set(key, timestamps);
+    next();
+}
+
+function requireApiKey(req, res, next) {
+    if (process.env.API_KEY && req.get('x-api-key') !== process.env.API_KEY) {
+        return res.status(401).json({ success: false, error: 'Valid API key required' });
+    }
+    next();
+}
+
+function beginJob() {
+    if (activeJobs.size >= MAX_CONCURRENT_JOBS) throw new Error('Too many active jobs');
+    const token = Symbol('job');
+    activeJobs.add(token);
+    return () => activeJobs.delete(token);
+}
+
+function validateActions(actions) {
+    if (!actions) return [];
+    if (!Array.isArray(actions) || actions.length > MAX_ACTIONS) throw new Error('Invalid actions list');
+    return actions.filter(action => action && ['click', 'wait', 'scroll', 'type'].includes(action.type));
+}
+
+async function applyActions(page, actions) {
+    for (const action of actions) {
+        if (action.type === 'wait') await new Promise(resolve => setTimeout(resolve, Math.min(Number(action.milliseconds) || 500, 5000)));
+        if (action.type === 'scroll') await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        if (action.type === 'click' && typeof action.selector === 'string') {
+            await page.locator(action.selector).click({ timeout: 5000 }).catch(() => { });
+        }
+        if (action.type === 'type' && typeof action.selector === 'string' && typeof action.value === 'string') {
+            await page.locator(action.selector).fill(action.value.slice(0, 500), { timeout: 5000 }).catch(() => { });
+        }
+    }
+}
+
+async function saveHistory(entry) {
+    try {
+        const history = JSON.parse(await fs.promises.readFile(historyFile, 'utf8')).slice(0, 49);
+        history.unshift(entry);
+        await fs.promises.writeFile(historyFile, JSON.stringify(history));
+    } catch {
+        await fs.promises.writeFile(historyFile, JSON.stringify([entry])).catch(() => { });
+    }
+}
+
+async function readHistory() {
+    try { return JSON.parse(await fs.promises.readFile(historyFile, 'utf8')); } catch { return []; }
+}
+
+function csvEscape(value) {
+    const text = value == null ? '' : String(value);
+    return `"${text.replace(/"/g, '""')}"`;
+}
+
+function buildCsv(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return '';
+    const keys = [...new Set(rows.flatMap(row => Object.keys(row)))];
+    return [keys.map(csvEscape).join(','), ...rows.map(row => keys.map(key => csvEscape(typeof row[key] === 'object' ? JSON.stringify(row[key]) : row[key])).join(','))].join('\n');
+}
+
+async function scrapeBulkItem(url) {
+    const browser = await launchBrowser();
+    try {
+        const page = await browser.newPage();
+        configurePage(page);
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        return await page.evaluate(() => ({
+            title: document.title,
+            description: document.querySelector('meta[name="description"]')?.content || '',
+            canonical: document.querySelector('link[rel="canonical"]')?.href || '',
+            url: location.href
+        }));
+    } finally {
+        await browser.close().catch(() => { });
+    }
 }
 
 // Dynamic browser loader for Vercel / Local environments
@@ -129,10 +229,15 @@ async function launchBrowser() {
 }
 
 // --- FEATURE 1: API DATA EXTRACTION ---
-app.post('/api/scrape', async (req, res) => {
+app.post('/api/scrape', requireApiKey, rateLimit, async (req, res) => {
     let browser;
+    let releaseJob;
     try {
-        const url = normalizeTargetUrl(req.body?.url);
+        releaseJob = beginJob();
+        const url = await normalizeTargetUrl(req.body?.url);
+        const options = req.body?.options || {};
+        const selectors = options.selectors && typeof options.selectors === 'object' ? options.selectors : {};
+        const actions = validateActions(options.actions);
         browser = await launchBrowser();
         const page = await browser.newPage();
         configurePage(page);
@@ -161,6 +266,7 @@ app.post('/api/scrape', async (req, res) => {
 
         // Vercel serverless function timeout optimization (30s max for hobby)
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await applyActions(page, actions);
 
         await page.evaluate(async () => {
             await new Promise((resolve) => {
@@ -179,9 +285,14 @@ app.post('/api/scrape', async (req, res) => {
 
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        const pageData = await page.evaluate(() => {
+        const pageData = await page.evaluate((customSelectors) => {
             const metaTitle = document.title || '';
             const metaDescription = document.querySelector('meta[name="description"]')?.content || '';
+            const getMeta = selector => document.querySelector(selector)?.content || '';
+            const getElement = selector => selector ? document.querySelector(selector) : null;
+            const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map(script => {
+                try { return JSON.parse(script.textContent); } catch { return null; }
+            }).filter(Boolean);
 
             const iframes = Array.from(document.querySelectorAll('iframe'))
                 .map(i => i.src || i.getAttribute('data-src'))
@@ -244,16 +355,32 @@ app.post('/api/scrape', async (req, res) => {
             return {
                 isSinglePage: collections.length < 3,
                 singleData: {
-                    title: h1 || metaTitle,
-                    description: primaryDescription,
-                    mainImage: primaryImage,
-                    embedIframes: iframes
+                    title: getElement(customSelectors.title)?.innerText.trim() || h1 || metaTitle,
+                    description: getElement(customSelectors.description)?.textContent.trim() || primaryDescription,
+                    mainImage: getElement(customSelectors.image)?.src || primaryImage,
+                    embedIframes: iframes,
+                    metadata: {
+                        canonical: document.querySelector('link[rel="canonical"]')?.href || '',
+                        ogTitle: getMeta('meta[property="og:title"]'),
+                        ogDescription: getMeta('meta[property="og:description"]'),
+                        ogImage: getMeta('meta[property="og:image"]'),
+                        twitterImage: getMeta('meta[name="twitter:image"]'),
+                        author: getMeta('meta[name="author"]'),
+                        published: getMeta('meta[property="article:published_time"]')
+                    },
+                    jsonLd
                 },
                 collectionData: collections
             };
-        });
+        }, selectors);
 
-        res.json({
+        if (options.screenshot || options.pdf) {
+            pageData.artifacts = {};
+            if (options.screenshot) pageData.artifacts.screenshot = (await page.screenshot({ fullPage: true, type: 'png' })).toString('base64');
+            if (options.pdf) pageData.artifacts.pdf = (await page.pdf({ format: 'A4', printBackground: true })).toString('base64');
+        }
+
+        const result = {
             success: true,
             scrapedUrl: url,
             pageType: pageData.isSinglePage ? 'Single Content Page' : 'Collection/Catalog Page',
@@ -261,20 +388,26 @@ app.post('/api/scrape', async (req, res) => {
             data: pageData.isSinglePage ? pageData.singleData : pageData.collectionData,
             interceptedAPICount: interceptedAPIs.length,
             interceptedAPIs: interceptedAPIs.slice(0, 5)
-        });
+        };
+        if (pageData.artifacts) result.artifacts = pageData.artifacts;
+        await saveHistory({ id: Date.now().toString(36), createdAt: new Date().toISOString(), url, pageType: result.pageType, data: result.data });
+        res.json(result);
 
     } catch (error) {
         sendError(res, error);
     } finally {
         if (browser) await browser.close().catch(() => { });
+        if (releaseJob) releaseJob();
     }
 });
 
 // --- FEATURE 2: CLONE UI PREVIEW ---
-app.post('/api/clone-ui', async (req, res) => {
+app.post('/api/clone-ui', requireApiKey, rateLimit, async (req, res) => {
     let browser;
+    let releaseJob;
     try {
-        const url = normalizeTargetUrl(req.body?.url);
+        releaseJob = beginJob();
+        const url = await normalizeTargetUrl(req.body?.url);
         browser = await launchBrowser();
         const page = await browser.newPage();
         configurePage(page);
@@ -337,8 +470,43 @@ app.post('/api/clone-ui', async (req, res) => {
         sendError(res, error);
     } finally {
         if (browser) await browser.close().catch(() => { });
+        if (releaseJob) releaseJob();
     }
 });
+
+app.post('/api/bulk', requireApiKey, rateLimit, async (req, res) => {
+    let releaseJob;
+    try {
+        releaseJob = beginJob();
+        if (!Array.isArray(req.body?.urls) || req.body.urls.length === 0 || req.body.urls.length > MAX_BULK_URLS) throw new Error(`Provide between 1 and ${MAX_BULK_URLS} URLs`);
+        const results = [];
+        for (const value of req.body.urls) {
+            try {
+                const url = await normalizeTargetUrl(value);
+                results.push({ url, success: true, data: await scrapeBulkItem(url) });
+            } catch (error) { results.push({ url: value, success: false, error: error.message }); }
+        }
+        res.json({ success: true, results });
+    } catch (error) { sendError(res, error); }
+    finally { if (releaseJob) releaseJob(); }
+});
+
+app.get('/api/history', async (req, res) => res.json({ success: true, history: await readHistory() }));
+app.delete('/api/history', async (req, res) => {
+    await fs.promises.unlink(historyFile).catch(() => { });
+    res.json({ success: true });
+});
+
+app.post('/api/export', async (req, res) => {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (req.body?.format === 'csv') {
+        res.type('text/csv').send(buildCsv(rows));
+    } else {
+        res.json({ success: true, data: rows });
+    }
+});
+
+app.get('/api/health', (req, res) => res.json({ success: true, activeJobs: activeJobs.size }));
 
 // Export Express app for Vercel
 module.exports = app;

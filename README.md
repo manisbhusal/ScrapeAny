@@ -6,7 +6,10 @@ A serverless-ready Node.js API built with Express, Puppeteer, and Stealth plugin
 
 ## ✨ Features
 
-- **Data & API Extraction (`/api/scrape`)**: Intercepts `.m3u8` / `.mp4` video streams and JSON network payloads while parsing metadata, headings, main images, and embedded resources.
+- **Data & API Extraction (`/api/scrape`)**: Intercepts `.m3u8` / `.mp4` video streams and JSON network payloads while parsing metadata, headings, images, Open Graph data, and JSON-LD.
+- **Configurable jobs**: Supply CSS selectors, click/type/scroll/wait actions, mobile-friendly viewport options, screenshots, and PDFs.
+- **Bulk and history APIs**: Scrape up to 20 URLs, review recent results, clear history, and export rows as CSV.
+- **Production controls**: DNS-aware SSRF protection, request limits, browser concurrency limits, optional API-key authentication, and a health endpoint.
 - **UI Cloning (`/api/clone-ui`)**: Clones static DOM structures by neutralizing scripts, inline event listeners, and external redirects while maintaining absolute relative asset paths.
 - **Stealth Anti-Bot Bypass**: Integrated with `puppeteer-extra-plugin-stealth` to bypass basic anti-bot and Cloudflare checks.
 - **Serverless & Local Compatibility**: Seamlessly switches between local Chromium binaries and `@sparticuz/chromium` for execution on serverless platforms like Vercel.
@@ -53,12 +56,25 @@ The server will start at `http://localhost:3000`.
 
 **Endpoint**: `POST /api/scrape`
 
-**Headers**: `Content-Type: application/json`
+**Headers**: `Content-Type: application/json` and, when `API_KEY` is configured, `X-API-Key`
 
 ```json
 // Request Body
 {
-  "url": "[https://example.com](https://example.com)"
+  "url": "https://example.com",
+  "options": {
+    "selectors": {
+      "title": "h1",
+      "description": ".description",
+      "image": "meta[property='og:image']"
+    },
+    "actions": [
+      { "type": "click", "selector": ".load-more" },
+      { "type": "wait", "milliseconds": 1000 }
+    ],
+    "screenshot": true,
+    "pdf": false
+  }
 }
 ```
 
@@ -71,9 +87,18 @@ The server will start at `http://localhost:3000`.
 ```json
 // Request Body
 {
-  "url": "[https://example.com](https://example.com)"
+  "url": "https://example.com"
 }
 ```
+
+### Additional endpoints
+
+- `POST /api/bulk` with `{ "urls": ["https://example.com"] }`
+- `GET /api/history` and `DELETE /api/history`
+- `POST /api/export` with `{ "format": "csv", "rows": [...] }`
+- `GET /api/health`
+
+Set `API_KEY` to require `X-API-Key` on scraping and bulk routes. Set `ALLOWED_ORIGIN` to restrict browser origins. History uses temporary storage on the serverless filesystem; use a database for durable production history.
 
 ---
 

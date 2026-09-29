@@ -183,6 +183,65 @@
         color: var(--text-muted);
       }
 
+      .options-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .options-grid input,
+      .options-grid textarea,
+      .bulk-input {
+        width: 100%;
+        background: var(--bg-input);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        color: var(--text-main);
+        padding: 10px;
+        font: inherit;
+      }
+
+      .options-grid label,
+      .check-label {
+        color: var(--text-muted);
+        font-size: 0.78rem;
+      }
+
+      .options-grid textarea {
+        grid-column: 1 / -1;
+        min-height: 58px;
+        resize: vertical;
+      }
+      .bulk-panel {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .bulk-input {
+        min-height: 74px;
+        resize: vertical;
+      }
+      .check-row {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+      }
+
+      @media (max-width: 700px) {
+        .input-wrapper {
+          flex-direction: column;
+          border-radius: 16px;
+          padding: 12px;
+        }
+        .button-group {
+          flex-wrap: wrap;
+        }
+        .options-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
       .spinner {
         width: 14px;
         height: 14px;
@@ -310,6 +369,51 @@
           <div id="spinner" class="spinner"></div>
           <span id="statusText">Ready</span>
         </div>
+        <div class="options-grid">
+          <label
+            >Title selector<input id="titleSelector" placeholder="h1"
+          /></label>
+          <label
+            >Description selector<input
+              id="descriptionSelector"
+              placeholder=".description"
+          /></label>
+          <label
+            >Image selector<input
+              id="imageSelector"
+              placeholder="meta[property='og:image']"
+          /></label>
+          <textarea
+            id="actionsInput"
+            placeholder='Actions JSON: [{"type":"click","selector":".load-more"}]'
+          ></textarea>
+          <div class="check-row">
+            <label class="check-label"
+              ><input type="checkbox" id="screenshotOption" /> Screenshot</label
+            >
+            <label class="check-label"
+              ><input type="checkbox" id="pdfOption" /> PDF</label
+            >
+          </div>
+        </div>
+        <div class="bulk-panel">
+          <textarea
+            class="bulk-input"
+            id="bulkUrls"
+            placeholder="Bulk URLs, one per line"
+          ></textarea>
+          <div class="button-group">
+            <button class="secondary-btn" onclick="runBulk()">
+              Bulk Scrape
+            </button>
+            <button class="secondary-btn" onclick="loadHistory()">
+              History
+            </button>
+            <button class="secondary-btn" onclick="clearHistory()">
+              Clear History
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="panel">
@@ -404,6 +508,7 @@
         statusText.textContent =
           "Bypassing verification & parsing site parameters...";
         output.textContent = "// Fetching data from headless engine...";
+        const options = getOptions();
 
         try {
           const res = await fetch(`${window.location.origin}/api/scrape`, {
@@ -412,7 +517,7 @@
               "Content-Type": "application/json",
               Accept: "application/json",
             },
-            body: JSON.stringify({ url }),
+            body: JSON.stringify({ url, options }),
           });
           const json = await res.json();
 
@@ -491,6 +596,74 @@
         } finally {
           setControlsState(false);
         }
+      }
+
+      function getOptions() {
+        let actions = [];
+        try {
+          actions = JSON.parse(
+            document.getElementById("actionsInput").value || "[]",
+          );
+        } catch {
+          actions = [];
+        }
+        return {
+          selectors: {
+            title: document.getElementById("titleSelector").value.trim(),
+            description: document
+              .getElementById("descriptionSelector")
+              .value.trim(),
+            image: document.getElementById("imageSelector").value.trim(),
+          },
+          actions,
+          screenshot: document.getElementById("screenshotOption").checked,
+          pdf: document.getElementById("pdfOption").checked,
+        };
+      }
+
+      async function runBulk() {
+        const urls = document
+          .getElementById("bulkUrls")
+          .value.split("\\n")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const output = document.getElementById("jsonOutput");
+        if (!urls.length) return;
+        currentMode = "json";
+        switchView("json");
+        setControlsState(true);
+        try {
+          const res = await fetch(`${window.location.origin}/api/bulk`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({ urls }),
+          });
+          output.textContent = JSON.stringify(await res.json(), null, 2);
+        } finally {
+          setControlsState(false);
+        }
+      }
+
+      async function loadHistory() {
+        const res = await fetch(`${window.location.origin}/api/history`);
+        currentMode = "json";
+        switchView("json");
+        document.getElementById("jsonOutput").textContent = JSON.stringify(
+          await res.json(),
+          null,
+          2,
+        );
+      }
+
+      async function clearHistory() {
+        await fetch(`${window.location.origin}/api/history`, {
+          method: "DELETE",
+        });
+        document.getElementById("jsonOutput").textContent =
+          "// History cleared";
       }
 
       async function copyContent(event) {
