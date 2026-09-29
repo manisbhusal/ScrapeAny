@@ -9,7 +9,7 @@ const app = express();
 app.use(cors({
     origin: process.env.ALLOWED_ORIGIN || true,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-API-Key']
 }));
 
 app.use(express.json({ limit: '16kb' }));
@@ -114,6 +114,9 @@ function rateLimit(req, res, next) {
 }
 
 function requireApiKey(req, res, next) {
+    const origin = req.get('origin');
+    const sameOrigin = origin && origin === `${req.protocol}://${req.get('host')}`;
+    if (sameOrigin) return next();
     if (process.env.API_KEY && req.get('x-api-key') !== process.env.API_KEY) {
         return res.status(401).json({ success: false, error: 'Valid API key required' });
     }
@@ -507,6 +510,13 @@ app.post('/api/export', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ success: true, activeJobs: activeJobs.size }));
+
+app.use((error, req, res, next) => {
+    if (error instanceof SyntaxError && error.status === 400 && error.type === 'entity.parse.failed') {
+        return res.status(400).json({ success: false, error: 'Request body must be valid JSON' });
+    }
+    next(error);
+});
 
 // Export Express app for Vercel
 module.exports = app;

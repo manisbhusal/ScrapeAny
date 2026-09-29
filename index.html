@@ -511,7 +511,7 @@
         const options = getOptions();
 
         try {
-          const res = await fetch(`${window.location.origin}/api/scrape`, {
+          const json = await requestJson("/api/scrape", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -519,8 +519,6 @@
             },
             body: JSON.stringify({ url, options }),
           });
-          const json = await res.json();
-
           if (json.success) {
             statusText.style.color = "var(--status-success)";
             statusText.textContent = `Completed — Type: ${json.pageType || "Target Content"}`;
@@ -562,7 +560,7 @@
         output.textContent = "// Cloning UI markup...";
 
         try {
-          const res = await fetch(`${window.location.origin}/api/clone-ui`, {
+          const json = await requestJson("/api/clone-ui", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -570,8 +568,6 @@
             },
             body: JSON.stringify({ url }),
           });
-          const json = await res.json();
-
           if (json.success) {
             clonedHtmlData = json.html;
             statusText.style.color = "var(--status-success)";
@@ -621,6 +617,53 @@
         };
       }
 
+      async function requestJson(path, options = {}) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 35000);
+        try {
+          const response = await fetch(path, {
+            ...options,
+            signal: controller.signal,
+          });
+          const contentType = response.headers.get("content-type") || "";
+          const raw = await response.text();
+          let payload = null;
+          if (contentType.includes("application/json")) {
+            try {
+              payload = JSON.parse(raw);
+            } catch {
+              payload = null;
+            }
+          }
+          if (!response.ok) {
+            const detail =
+              payload?.error ||
+              raw
+                .replace(/<[^>]*>/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 240);
+            throw new Error(
+              `Request failed (${response.status}): ${detail || response.statusText}`,
+            );
+          }
+          if (!payload)
+            throw new Error(
+              `Server returned a non-JSON response (${response.status})`,
+            );
+          return payload;
+        } catch (error) {
+          if (error.name === "AbortError") {
+            throw new Error(
+              "The Vercel function timed out. Check deployment logs and try a smaller page.",
+            );
+          }
+          throw error;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
       async function runBulk() {
         const urls = document
           .getElementById("bulkUrls")
@@ -633,7 +676,7 @@
         switchView("json");
         setControlsState(true);
         try {
-          const res = await fetch(`${window.location.origin}/api/bulk`, {
+          const json = await requestJson("/api/bulk", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -641,25 +684,27 @@
             },
             body: JSON.stringify({ urls }),
           });
-          output.textContent = JSON.stringify(await res.json(), null, 2);
+          output.textContent = JSON.stringify(json, null, 2);
+        } catch (error) {
+          output.textContent = `// ${error.message}`;
         } finally {
           setControlsState(false);
         }
       }
 
       async function loadHistory() {
-        const res = await fetch(`${window.location.origin}/api/history`);
+        const json = await requestJson("/api/history");
         currentMode = "json";
         switchView("json");
         document.getElementById("jsonOutput").textContent = JSON.stringify(
-          await res.json(),
+          json,
           null,
           2,
         );
       }
 
       async function clearHistory() {
-        await fetch(`${window.location.origin}/api/history`, {
+        await requestJson("/api/history", {
           method: "DELETE",
         });
         document.getElementById("jsonOutput").textContent =
