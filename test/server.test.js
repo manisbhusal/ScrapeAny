@@ -11,7 +11,11 @@ function request(path, options = {}) {
             let body = '';
             response.setEncoding('utf8');
             response.on('data', chunk => { body += chunk; });
-            response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(body) }));
+            response.on('end', () => {
+                let parsed = body;
+                try { parsed = JSON.parse(body); } catch { }
+                resolve({ status: response.statusCode, body: parsed });
+            });
         });
         request.on('error', reject);
         request.end(options.body);
@@ -40,5 +44,19 @@ test('scrape rejects missing URLs before launching a browser', async () => {
     });
     assert.equal(response.status, 400);
     assert.equal(response.body.error, 'URL is required');
+    server.close();
+});
+
+test('export endpoint returns markdown rows', async () => {
+    const server = app.listen(0);
+    await new Promise(resolve => server.once('listening', resolve));
+    const port = server.address().port;
+    const response = await request('/api/export', {
+        port,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'markdown', rows: [{ title: 'Example' }] })
+    });
+    assert.equal(response.status, 200);
     server.close();
 });

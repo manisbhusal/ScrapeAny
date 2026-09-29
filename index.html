@@ -228,6 +228,22 @@
         align-items: center;
       }
 
+      .tool-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .tool-row select,
+      .tool-row input {
+        background: var(--bg-input);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        color: var(--text-main);
+        padding: 8px;
+      }
+
       @media (max-width: 700px) {
         .input-wrapper {
           flex-direction: column;
@@ -315,13 +331,23 @@
 
       iframe#uiPreview {
         width: 100%;
-        height: 520px;
+        height: min(760px, 75vh);
         border: 1px solid var(--border-color);
         border-radius: 12px;
         background: #ffffff;
         display: none;
-        /* Prevent links and buttons from opening external sites */
-        pointer-events: none;
+        pointer-events: auto;
+        overflow: auto;
+      }
+
+      iframe#uiPreview.preview-fullscreen {
+        position: fixed;
+        inset: 16px;
+        z-index: 10;
+        width: calc(100vw - 32px);
+        height: calc(100vh - 32px);
+        border-radius: 8px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
       }
 
       pre::-webkit-scrollbar {
@@ -395,6 +421,26 @@
               ><input type="checkbox" id="pdfOption" /> PDF</label
             >
           </div>
+          <div class="tool-row">
+            <label class="check-label"
+              >Viewport
+              <select id="viewportOption">
+                <option value="desktop">Desktop</option>
+                <option value="tablet">Tablet</option>
+                <option value="mobile">Mobile</option>
+              </select>
+            </label>
+            <label class="check-label"
+              >Cache
+              <input type="checkbox" id="cacheOption" checked />
+            </label>
+            <button class="secondary-btn" onclick="saveTemplate()">
+              Save Template
+            </button>
+            <button class="secondary-btn" onclick="loadTemplates()">
+              Templates
+            </button>
+          </div>
         </div>
         <div class="bulk-panel">
           <textarea
@@ -411,6 +457,21 @@
             </button>
             <button class="secondary-btn" onclick="clearHistory()">
               Clear History
+            </button>
+          </div>
+          <div class="tool-row">
+            <input id="sitemapUrl" placeholder="Sitemap URL" />
+            <button class="secondary-btn" onclick="runSitemap()">
+              Crawl Sitemap
+            </button>
+            <button class="secondary-btn" onclick="exportOutput('csv')">
+              CSV
+            </button>
+            <button class="secondary-btn" onclick="exportOutput('markdown')">
+              Markdown
+            </button>
+            <button class="secondary-btn" onclick="exportOutput('html')">
+              HTML
             </button>
           </div>
         </div>
@@ -435,6 +496,12 @@
             </button>
           </div>
           <div class="button-group">
+            <button class="copy-btn" onclick="changePreviewZoom(-0.1)">
+              - Zoom
+            </button>
+            <button class="copy-btn" onclick="changePreviewZoom(0.1)">
+              + Zoom
+            </button>
             <button
               class="copy-btn"
               id="downloadBtn"
@@ -442,6 +509,14 @@
               onclick="downloadHtml()"
             >
               Download HTML
+            </button>
+            <button
+              class="copy-btn"
+              id="fullscreenBtn"
+              style="display: none"
+              onclick="togglePreviewFullscreen()"
+            >
+              Fullscreen Preview
             </button>
             <button class="copy-btn" onclick="copyContent(event)">
               Copy Output
@@ -451,13 +526,14 @@
         <pre
           id="jsonOutput"
         ><code>// Output response will render here...</code></pre>
-        <iframe id="uiPreview" sandbox="allow-same-origin allow-forms"></iframe>
+        <iframe id="uiPreview" sandbox="allow-same-origin"></iframe>
       </div>
     </div>
 
     <script>
       let currentMode = "json"; // 'json' or 'html'
       let clonedHtmlData = "";
+      let previewZoom = 1;
 
       function setControlsState(disabled) {
         document.getElementById("scrapeBtn").disabled = disabled;
@@ -478,12 +554,31 @@
           iframe.style.display = "block";
           jsonBtn.classList.remove("active");
           uiBtn.classList.add("active");
+          document.getElementById("fullscreenBtn").style.display =
+            "inline-flex";
         } else {
           output.style.display = "block";
           iframe.style.display = "none";
           jsonBtn.classList.add("active");
           uiBtn.classList.remove("active");
+          document.getElementById("fullscreenBtn").style.display = "none";
         }
+      }
+
+      function togglePreviewFullscreen() {
+        const iframe = document.getElementById("uiPreview");
+        iframe.classList.toggle("preview-fullscreen");
+        document.getElementById("fullscreenBtn").textContent =
+          iframe.classList.contains("preview-fullscreen")
+            ? "Exit Fullscreen"
+            : "Fullscreen Preview";
+      }
+
+      function changePreviewZoom(delta) {
+        previewZoom = Math.min(1.5, Math.max(0.6, previewZoom + delta));
+        document.getElementById("uiPreview").style.transform =
+          `scale(${previewZoom})`;
+        document.getElementById("uiPreview").style.transformOrigin = "top left";
       }
 
       async function scrapeSite() {
@@ -614,6 +709,8 @@
           actions,
           screenshot: document.getElementById("screenshotOption").checked,
           pdf: document.getElementById("pdfOption").checked,
+          viewport: document.getElementById("viewportOption").value,
+          cache: document.getElementById("cacheOption").checked,
         };
       }
 
@@ -709,6 +806,90 @@
         });
         document.getElementById("jsonOutput").textContent =
           "// History cleared";
+      }
+
+      async function runSitemap() {
+        const url = document.getElementById("sitemapUrl").value.trim();
+        if (!url) return;
+        currentMode = "json";
+        switchView("json");
+        setControlsState(true);
+        try {
+          const json = await requestJson("/api/sitemap", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({ url }),
+          });
+          document.getElementById("jsonOutput").textContent = JSON.stringify(
+            json,
+            null,
+            2,
+          );
+        } catch (error) {
+          document.getElementById("jsonOutput").textContent =
+            `// ${error.message}`;
+        } finally {
+          setControlsState(false);
+        }
+      }
+
+      async function saveTemplate() {
+        const url = document.getElementById("targetUrl").value.trim();
+        const name = prompt("Template name:", "My scraper");
+        if (!url || !name) return;
+        await requestJson("/api/templates", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ name, url, options: getOptions() }),
+        });
+        document.getElementById("statusText").textContent = "Template saved";
+      }
+
+      async function loadTemplates() {
+        const json = await requestJson("/api/templates");
+        currentMode = "json";
+        switchView("json");
+        document.getElementById("jsonOutput").textContent = JSON.stringify(
+          json,
+          null,
+          2,
+        );
+      }
+
+      async function exportOutput(format) {
+        let rows = [];
+        try {
+          const parsed = JSON.parse(
+            document.getElementById("jsonOutput").textContent,
+          );
+          rows =
+            parsed.results ||
+            (Array.isArray(parsed.data)
+              ? parsed.data
+              : [parsed.data || parsed]);
+        } catch {
+          return;
+        }
+        const response = await fetch("/api/export", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ format, rows }),
+        });
+        const blob = await response.blob();
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `scrapeany-export.${format === "markdown" ? "md" : format}`;
+        link.click();
+        URL.revokeObjectURL(link.href);
       }
 
       async function copyContent(event) {

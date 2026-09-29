@@ -27,6 +27,8 @@ const MAX_CONCURRENT_JOBS = 2;
 const activeJobs = new Set();
 const requestWindows = new Map();
 const historyFile = path.join('/tmp', 'scrapeany-history.json');
+const templatesFile = path.join('/tmp', 'scrapeany-templates.json');
+const cacheFile = path.join('/tmp', 'scrapeany-cache.json');
 
 function isPrivateIp(hostname) {
     const version = net.isIP(hostname);
@@ -163,6 +165,26 @@ async function readHistory() {
     try { return JSON.parse(await fs.promises.readFile(historyFile, 'utf8')); } catch { return []; }
 }
 
+async function readJsonFile(file, fallback) {
+    try { return JSON.parse(await fs.promises.readFile(file, 'utf8')); } catch { return fallback; }
+}
+
+async function writeJsonFile(file, value) {
+    await fs.promises.writeFile(file, JSON.stringify(value));
+}
+
+async function getCached(url) {
+    const cache = await readJsonFile(cacheFile, {});
+    const entry = cache[url];
+    return entry && entry.expiresAt > Date.now() ? entry.value : null;
+}
+
+async function setCached(url, value) {
+    const cache = await readJsonFile(cacheFile, {});
+    cache[url] = { value, expiresAt: Date.now() + 5 * 60 * 1000 };
+    await writeJsonFile(cacheFile, cache).catch(() => { });
+}
+
 function csvEscape(value) {
     const text = value == null ? '' : String(value);
     return `"${text.replace(/"/g, '""')}"`;
@@ -172,6 +194,20 @@ function buildCsv(rows) {
     if (!Array.isArray(rows) || rows.length === 0) return '';
     const keys = [...new Set(rows.flatMap(row => Object.keys(row)))];
     return [keys.map(csvEscape).join(','), ...rows.map(row => keys.map(key => csvEscape(typeof row[key] === 'object' ? JSON.stringify(row[key]) : row[key])).join(','))].join('\n');
+}
+
+function buildMarkdown(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return '';
+    const keys = [...new Set(rows.flatMap(row => Object.keys(row)))];
+    const cell = value => String(value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    return [`| ${keys.join(' | ')} |`, `| ${keys.map(() => '---').join(' | ')} |`, ...rows.map(row => `| ${keys.map(key => cell(row[key])).join(' | ')} |`)].join('\n');
+}
+
+async function readSitemap(url) {
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`Sitemap request failed (${response.status})`);
+    const xml = await response.text();
+    return [...xml.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/gi)].map(match => match[1].trim()).slice(0, MAX_BULK_URLS);
 }
 
 async function scrapeBulkItem(url) {
@@ -241,10 +277,17 @@ app.post('/api/scrape', requireApiKey, rateLimit, async (req, res) => {
         const options = req.body?.options || {};
         const selectors = options.selectors && typeof options.selectors === 'object' ? options.selectors : {};
         const actions = validateActions(options.actions);
+        const cached = options.cache === false ? null : await getCached(`${url}:${JSON.stringify(options)}`);
+        if (cached) return res.json({ ...cached, cached: true });
         browser = await launchBrowser();
         const page = await browser.newPage();
         configurePage(page);
-        await page.setViewport({ width: 1920, height: 1080 });
+        const viewport = options.viewport === 'mobile'
+            ? { width: 390, height: 844, isMobile: true, hasTouch: true }
+            : options.viewport === 'tablet'
+                ? { width: 768, height: 1024, isMobile: true, hasTouch: true }
+                : { width: 1920, height: 1080 };
+        await page.setViewport(viewport);
 
         const videoStreams = [];
         const interceptedAPIs = [];
@@ -360,7 +403,7 @@ app.post('/api/scrape', requireApiKey, rateLimit, async (req, res) => {
                 singleData: {
                     title: getElement(customSelectors.title)?.innerText.trim() || h1 || metaTitle,
                     description: getElement(customSelectors.description)?.textContent.trim() || primaryDescription,
-                    mainImage: getElement(customSelectors.image)?.src || primaryImage,
+                    mainImage: getElement(customSelectors.image)?.src || getElement(customSelectors.image)?.content || primaryImage,
                     embedIframes: iframes,
                     metadata: {
                         canonical: document.querySelector('link[rel="canonical"]')?.href || '',
@@ -371,7 +414,14 @@ app.post('/api/scrape', requireApiKey, rateLimit, async (req, res) => {
                         author: getMeta('meta[name="author"]'),
                         published: getMeta('meta[property="article:published_time"]')
                     },
-                    jsonLd
+                    jsonLd,
+                    headings: Array.from(document.querySelectorAll('h1, h2, h3')).map(item => item.innerText.trim()).filter(Boolean).slice(0, 100),
+                    tables: Array.from(document.querySelectorAll('table')).slice(0, 10).map(table => {
+                        const rows = Array.from(table.querySelectorAll('tr')).map(row => Array.from(row.querySelectorAll('th, td')).map(cell => cell.innerText.trim()));
+                        return { headers: rows[0] || [], rows: rows.slice(1) };
+                    }),
+                    links: Array.from(document.querySelectorAll('a[href]')).map(anchor => ({ title: anchor.innerText.trim(), url: anchor.href })).filter(item => item.url.startsWith('http')).slice(0, 100),
+                    pagination: Array.from(document.querySelectorAll('a[rel="next"], a[href*="page="], a[href*="/page/"]')).map(anchor => anchor.href).slice(0, 20)
                 },
                 collectionData: collections
             };
@@ -393,6 +443,8 @@ app.post('/api/scrape', requireApiKey, rateLimit, async (req, res) => {
             interceptedAPIs: interceptedAPIs.slice(0, 5)
         };
         if (pageData.artifacts) result.artifacts = pageData.artifacts;
+        result.cached = false;
+        await setCached(`${url}:${JSON.stringify(options)}`, result);
         await saveHistory({ id: Date.now().toString(36), createdAt: new Date().toISOString(), url, pageType: result.pageType, data: result.data });
         res.json(result);
 
@@ -424,7 +476,7 @@ app.post('/api/clone-ui', requireApiKey, rateLimit, async (req, res) => {
                 const timer = setInterval(() => {
                     window.scrollBy(0, 400);
                     totalHeight += 400;
-                    if (totalHeight >= 3000 || totalHeight >= document.body.scrollHeight) {
+                    if (totalHeight >= 12000 || totalHeight >= document.body.scrollHeight) {
                         clearInterval(timer);
                         window.scrollTo(0, 0);
                         resolve();
@@ -434,6 +486,13 @@ app.post('/api/clone-ui', requireApiKey, rateLimit, async (req, res) => {
         });
 
         await new Promise(resolve => setTimeout(resolve, 1000));
+
+        const originalScreenshot = (await page.screenshot({ fullPage: true, type: 'png' })).toString('base64');
+        const assets = await page.evaluate(() => ({
+            stylesheets: Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(link => link.href).filter(Boolean),
+            images: Array.from(document.images).map(image => image.currentSrc || image.src).filter(Boolean).slice(0, 200),
+            fonts: Array.from(document.fonts || []).map(font => font.family)
+        }));
 
         const cleanHtml = await page.evaluate(() => {
             const origin = window.location.origin;
@@ -466,7 +525,9 @@ app.post('/api/clone-ui', requireApiKey, rateLimit, async (req, res) => {
 
         res.json({
             success: true,
-            html: cleanHtml
+            html: cleanHtml,
+            originalScreenshot,
+            assets
         });
 
     } catch (error) {
@@ -494,6 +555,38 @@ app.post('/api/bulk', requireApiKey, rateLimit, async (req, res) => {
     finally { if (releaseJob) releaseJob(); }
 });
 
+app.post('/api/sitemap', requireApiKey, rateLimit, async (req, res) => {
+    let releaseJob;
+    try {
+        releaseJob = beginJob();
+        const sitemapUrl = await normalizeTargetUrl(req.body?.url);
+        const urls = await readSitemap(sitemapUrl);
+        const results = [];
+        for (const url of urls) {
+            try { results.push({ url, success: true, data: await scrapeBulkItem(await normalizeTargetUrl(url)) }); }
+            catch (error) { results.push({ url, success: false, error: error.message }); }
+        }
+        res.json({ success: true, source: sitemapUrl, results });
+    } catch (error) { sendError(res, error); }
+    finally { if (releaseJob) releaseJob(); }
+});
+
+app.get('/api/templates', async (req, res) => res.json({ success: true, templates: await readJsonFile(templatesFile, []) }));
+app.post('/api/templates', async (req, res) => {
+    const template = req.body || {};
+    if (typeof template.name !== 'string' || typeof template.url !== 'string') return res.status(400).json({ success: false, error: 'Template name and URL are required' });
+    const templates = await readJsonFile(templatesFile, []);
+    const saved = { id: Date.now().toString(36), name: template.name.slice(0, 80), url: template.url, options: template.options || {}, createdAt: new Date().toISOString() };
+    templates.unshift(saved);
+    await writeJsonFile(templatesFile, templates.slice(0, 50));
+    res.json({ success: true, template: saved });
+});
+app.delete('/api/templates/:id', async (req, res) => {
+    const templates = (await readJsonFile(templatesFile, [])).filter(template => template.id !== req.params.id);
+    await writeJsonFile(templatesFile, templates);
+    res.json({ success: true });
+});
+
 app.get('/api/history', async (req, res) => res.json({ success: true, history: await readHistory() }));
 app.delete('/api/history', async (req, res) => {
     await fs.promises.unlink(historyFile).catch(() => { });
@@ -504,9 +597,21 @@ app.post('/api/export', async (req, res) => {
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
     if (req.body?.format === 'csv') {
         res.type('text/csv').send(buildCsv(rows));
+    } else if (req.body?.format === 'markdown') {
+        res.type('text/markdown').send(buildMarkdown(rows));
+    } else if (req.body?.format === 'html') {
+        const keys = [...new Set(rows.flatMap(row => Object.keys(row)))];
+        const header = `<tr>${keys.map(key => `<th>${key}</th>`).join('')}</tr>`;
+        const body = rows.map(row => `<tr>${keys.map(key => `<td>${String(row[key] ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char]))}</td>`).join('')}</tr>`).join('');
+        res.type('text/html').send(`<table><thead>${header}</thead><tbody>${body}</tbody></table>`);
     } else {
         res.json({ success: true, data: rows });
     }
+});
+
+app.delete('/api/cache', async (req, res) => {
+    await fs.promises.unlink(cacheFile).catch(() => { });
+    res.json({ success: true });
 });
 
 app.get('/api/health', (req, res) => res.json({ success: true, activeJobs: activeJobs.size }));
